@@ -1,0 +1,4 @@
+ponyorm
+numpy
+sympy
+git+https://github.com/AlanCristhian/name.git
