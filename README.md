@@ -1,2 +1,2 @@
-# symset
-Symbolic set operatios
+# numset
+Numeric set operatios
