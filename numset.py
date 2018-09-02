@@ -1,86 +1,194 @@
-from __future__ import annotations
+import math
+import types
+import opcode
 
-from dataclasses import dataclass, field
-from typing import (Optional, List, Tuple, Union, Iterable, Generator, Any,
-                    Iterator)
-import numbers
-
-import name  # type: ignore
+import bytecode
 
 
-class Statement(name.AutoName):  # type: ignore
-    def __init__(self, feature: Optional[bool] = None) -> None:
-        super().__init__(0)
-        self.feature = feature
+# In the generator, jump to loop start label if the element satisfy the
+# property. The loop start label in the generator will be the function end
+# label.
+def _get_new_end_label(old_bytecode):
+    for i in old_bytecode:
+        if isinstance(i, bytecode.Label):
+            return i  # First label found will be the function end label
 
-    def __rshift__(self, other: Statement) -> Statement:
-        if self.feature == other.feature:
-            return Statement(self.feature)
+
+# Find the generator end label
+def _get_old_end_label(old_bytecode):
+    for i in reversed(old_bytecode):
+        if isinstance(i, bytecode.Label):
+            return i  # Penultimate label found is that will be replaced
+
+
+# Start before the loop initialization
+def _get_new_start(old_bytecode):
+    flag = 0
+    for i, b in enumerate(old_bytecode):
+        if flag == 0:
+            if isinstance(b, bytecode.Instr) and b.name == "FOR_ITER":
+                flag = 1
+        elif flag == 1:
+            if b.name == "UNPACK_SEQUENCE":
+                continue
+            name = b.name
+            flag = 2
+        elif isinstance(b, bytecode.Instr) and b.name != name:
+            return i
+
+
+def _get_member_bytecode(generator):
+    old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
+    new_bytecode = bytecode.Bytecode()
+
+    for new_start, b in enumerate(old_bytecode):
+        if isinstance(b, bytecode.Instr) and b.name == "POP_JUMP_IF_FALSE":
+            break
+
+    for i in old_bytecode[new_start + 1:]:   # remove the loop initialization
+        if isinstance(i, bytecode.Instr) and i.name == "YIELD_VALUE":
+            new_bytecode.append(bytecode.Instr("RETURN_VALUE"))
+            break
+        new_bytecode.append(i)
+
+    new_bytecode.varnames = generator.gi_code.co_varnames[:1]
+    new_bytecode.argcount = len(new_bytecode.varnames)
+    return new_bytecode
+
+
+def _bytecode_to_function(generator, byte_code, name):
+    new_code = byte_code.to_code()
+    new_globals = generator.gi_frame.f_globals
+    return types.FunctionType(new_code, new_globals, name)
+
+
+def get_member(generator):
+    fun_bytecode = _get_member_bytecode(generator)
+    return _bytecode_to_function(generator, fun_bytecode, "<member>")
+
+
+def _get_property_bytecode(generator):
+    old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
+    new_bytecode = bytecode.Bytecode()
+    new_start = _get_new_start(old_bytecode)
+    for i in old_bytecode[new_start:]:   # remove the loop initialization
+        if isinstance(i, bytecode.Instr) and i.name == "POP_JUMP_IF_FALSE":
+            new_bytecode.append(bytecode.Instr("RETURN_VALUE"))
+            break
+        new_bytecode.append(i)
+    new_bytecode.varnames = generator.gi_code.co_varnames[:1]
+    new_bytecode.argcount = len(new_bytecode.varnames)
+    return new_bytecode
+
+
+def _has_property(generator):
+    for i, op_code in enumerate(generator.gi_code.co_code):
+        if i%2 == 0 and op_code == opcode.opmap["POP_JUMP_IF_FALSE"]:
+            return True
+    return False
+
+
+def get_property(generator):
+    if _has_property(generator):
+        fun_bytecode = _get_property_bytecode(generator)
+    else:
+        fun_bytecode = bytecode.Bytecode([
+            bytecode.Instr("LOAD_CONST", True),
+            bytecode.Instr("RETURN_VALUE")])
+        fun_bytecode.argcount = generator.gi_code.co_argcount
+        fun_bytecode.varnames = generator.gi_code.co_varnames[1:]
+    return _bytecode_to_function(generator, fun_bytecode, "<property>")
+
+
+def _generator_to_function_bytecode(generator):
+    old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
+    new_bytecode = bytecode.Bytecode()
+    new_end_label = _get_new_end_label(old_bytecode)
+    old_end_label = _get_old_end_label(old_bytecode)
+    new_start = _get_new_start(old_bytecode)
+
+    for i in old_bytecode[new_start:]:   # remove the loop initialization
+        if isinstance(i, bytecode.Instr):
+            # Return the element that satisfy the property
+            if i.name == "YIELD_VALUE":
+                new_bytecode.append(bytecode.Instr("RETURN_VALUE", i.arg))
+
+            # remove jump that go to the start of the loop
+            elif i.name in ("POP_TOP", "JUMP_ABSOLUTE", "UNPACK_SEQUENCE"):
+                continue
+            else:
+                new_bytecode.append(bytecode.Instr(i.name, i.arg))
         else:
-            return Statement(not self.feature)
+            # jump to end if element not satisfy the property
+            if i == old_end_label:
+                new_bytecode.append(new_end_label)
+            else:
+                new_bytecode.append(i)
 
-    def __repr__(self) -> str:
-        return f"{super().__assigned_name__} is {self.feature}"
+    # return math.nan if element not satisfy the property
+    new_bytecode[-2] = bytecode.Instr("LOAD_CONST", math.nan)
+    new_bytecode.varnames = generator.gi_code.co_varnames[1:]
+    new_bytecode.argcount = len(new_bytecode.varnames)
+
+    return new_bytecode
 
 
-_AffirmationType = List[Tuple[Statement, Statement, bool]]
+def generator_to_function(generator):
+    fun_bytecode = _generator_to_function_bytecode(generator)
+    return _bytecode_to_function(generator, fun_bytecode, "<function>")
 
 
-@dataclass(repr=False)
-class Given:
-    _given: Statement
-    _statement: Statement = field(init=False)
-    _must_be: bool = field(init=False)
-    affirmations: _AffirmationType = field(default_factory=list, init=False)
+class Identity:
+    "A *generator* that recceive a value. Then yield it."
+    def __init__(self):
+        self.element = None
 
-    def statement(self, statement: Statement) -> Given:
-        self._statement = statement
+    def send(self, element):
+        self.element = element
+        return element
+
+    def __next__(self):
+        return self.element
+
+    def __iter__(self):
         return self
 
-    def must_be(self, feature: bool) -> Given:
-        self._must_be = feature
-        self.affirmations.append((self._given, self._statement, self._must_be))
-        return self
 
-    def and_given(self, statement: Statement) -> Given:
-        self._given = statement
-        return self
+class Image:
+    def __init__(self, expression):
+        self.expression = expression
+        self.cache = []
+        self.function = generator_to_function(expression)
+        self.property = get_property(expression)
+        self.member = get_member(expression)
+        self.domain = expression.gi_frame.f_locals['.0']
 
-    @property
-    def end(self) -> Statement:
-        (p0, t0, b0), (p1, t1, b1) = self.affirmations
-        if p0 != p1 and t0 == t1 and b0 != b1:
-            return Paradox(self.affirmations)
+    def __iter__(self):
+        if not self.cache:
+            return self
         else:
-            return Statement(True)
+            return iter(self.cache)
+
+    def __call__(self, element):
+        return self.function(element)
+
+    def __next__(self):
+        result = next(self.expression)
+        self.cache.append(result)
+        return result
 
 
-class Paradox(Statement):
-    def __init__(self, affirmations: _AffirmationType) -> None:
+class Integers(Identity):
+    def __init__(self, left, right):
         super().__init__()
-        self.affirmations = affirmations
+        self.elements = iter(range(left, right+1))
+        self.min = left
+        self.max = right
 
-
-class Class:
-    def __init__(self, *elements: Any,
-                 belongs_to: Optional[List[Class]] = None) -> None:
-        self.belongs_to = belongs_to
-        self.elements = elements
-
-    def __iter__(self) -> Iterator[Any]:
-        return iter(self.elements)
-
-    def __eq__(A, B: Any) -> bool:
-        """[A = B] <=> [x in A <=> x in B]"""
-        return all(x in B for x in A) and all(x in A for x in B)
-
-    def is_subset(A, B: Class) -> bool:
-        return all(x in B for x in A)
-
-    def is_proper_subset(A, B: Class) -> bool:
-        """A is subset of B and A != B"""
-        return all(x in B for x in A) and A != B
-
-
-def is_element(class_: Class) -> bool:
-    return False if class_.belongs_to is None else True
+    def __next__(self):
+        if self.element is None:
+            return next(self.elements)
+        else:
+            element = self.element
+            self.element = None
+            return element
