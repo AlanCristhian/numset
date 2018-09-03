@@ -55,6 +55,7 @@ def _get_member_bytecode(generator):
 
     new_bytecode.varnames = generator.gi_code.co_varnames[:1]
     new_bytecode.argcount = len(new_bytecode.varnames)
+
     return new_bytecode
 
 
@@ -73,11 +74,13 @@ def _get_property_bytecode(generator):
     old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
     new_bytecode = bytecode.Bytecode()
     new_start = _get_new_start(old_bytecode)
+
     for i in old_bytecode[new_start:]:   # remove the loop initialization
         if isinstance(i, bytecode.Instr) and i.name == "POP_JUMP_IF_FALSE":
             new_bytecode.append(bytecode.Instr("RETURN_VALUE"))
             break
         new_bytecode.append(i)
+
     new_bytecode.varnames = generator.gi_code.co_varnames[:1]
     new_bytecode.argcount = len(new_bytecode.varnames)
     return new_bytecode
@@ -129,6 +132,7 @@ def _generator_to_function_bytecode(generator):
 
     # return math.nan if element not satisfy the property
     new_bytecode[-2] = bytecode.Instr("LOAD_CONST", numpy.nan)
+
     new_bytecode.varnames = generator.gi_code.co_varnames[1:]
     new_bytecode.argcount = len(new_bytecode.varnames)
 
@@ -140,22 +144,6 @@ def generator_to_function(generator):
     return _bytecode_to_function(generator, fun_bytecode, "<function>")
 
 
-class Identity:
-    "A *generator* that recceive a value. Then yield it."
-    def __init__(self):
-        self.element = None
-
-    def send(self, element):
-        self.element = element
-        return element
-
-    def __next__(self):
-        return self.element
-
-    def __iter__(self):
-        return self
-
-
 def _ensure_elements(method):
     @functools.wraps(method)
     def wrapper(self, other):
@@ -164,7 +152,7 @@ def _ensure_elements(method):
         if other.elements is None:
             iter(other)
         return method(self, other)
-    return inner
+    return wrapper
 
 
 class BaseSet:

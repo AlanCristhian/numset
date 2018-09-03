@@ -2,8 +2,8 @@ import unittest
 import numpy
 import dis
 
-from numset import (Identity, Set, generator_to_function, get_property,
-                    get_member, Domain)
+from numset import (Set, generator_to_function, get_property, get_member,
+                    Domain)
 
 
 class GeneratorToFunctionSuite(unittest.TestCase):
@@ -108,24 +108,14 @@ class GetMememberSuite(unittest.TestCase):
         self.assertEqual(obtained.__name__, "<member>")
 
 
-class IdentitySuite(unittest.TestCase):
-    def test_send_and_return_same_object(self):
-        identity = Identity()
-        next(identity)
-        a = identity.send(1)
-        self.assertEqual(a, 1)
-        b = next(identity)
-        self.assertEqual(b, 1)
-
-
 class SetSuite(unittest.TestCase):
     def test_domain(self):
-        identity = Identity()
-        add_four = Set(x + 4 for x in identity)
-        self.assertEqual(add_four.domain, identity)
+        domain = iter(range(5))
+        add_four = Set(x + 4 for x in domain)
+        self.assertEqual(add_four.domain, domain)
 
     def test_return_correct_value(self):
-        return_b = Set("b" for x in Identity())
+        return_b = Set("b" for x in range(5))
         self.assertEqual(return_b(1), "b")
 
     def test_basic_iteration(self):
@@ -140,7 +130,7 @@ class SetSuite(unittest.TestCase):
         self.assertEqual(f(-2), -2)
 
     def test_callable(self):
-        add_five = Set(x + 5 for x in Identity())
+        add_five = Set(x + 5 for x in range(5))
         self.assertEqual(add_five(5), 10)
 
     def test_property(self):
@@ -286,5 +276,5 @@ class DomainSuite(unittest.TestCase):
         self.assertEqual(E, F)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
