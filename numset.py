@@ -1,8 +1,10 @@
-import math
 import types
 import opcode
+import functools
+from collections import abc
 
 import bytecode
+import numpy
 
 
 # In the generator, jump to loop start label if the element satisfy the
@@ -126,7 +128,7 @@ def _generator_to_function_bytecode(generator):
                 new_bytecode.append(i)
 
     # return math.nan if element not satisfy the property
-    new_bytecode[-2] = bytecode.Instr("LOAD_CONST", math.nan)
+    new_bytecode[-2] = bytecode.Instr("LOAD_CONST", numpy.nan)
     new_bytecode.varnames = generator.gi_code.co_varnames[1:]
     new_bytecode.argcount = len(new_bytecode.varnames)
 
@@ -154,41 +156,119 @@ class Identity:
         return self
 
 
-class Image:
+def _ensure_elements(method):
+    @functools.wraps(method)
+    def wrapper(self, other):
+        if self.elements is None:
+            iter(self)
+        if other.elements is None:
+            iter(other)
+        return method(self, other)
+    return inner
+
+
+class BaseSet:
+    @_ensure_elements
+    def __eq__(self, other):
+        return numpy.array_equal(self.elements, other.elements)
+
+    def issubset(self, other):
+        return numpy.in1d(self.elements, other.elements)
+
+    def issuperset(self, other):
+        return other.issubset(self)
+
+    @_ensure_elements
+    def isdisjoint(self, other):
+        diff = numpy.intersect1d(self.elements, other.elements)
+        if len(diff) == 0:
+            return True
+        else:
+            return False
+
+    def __le__(self, other):
+        return self < other or self == other
+
+    def __ge__(self, other):
+        return self > other or self == other
+
+    @_ensure_elements
+    def union(self, other):
+        result = numpy.union1d(self.elements, other.elements)
+        return Set(x for x in result)
+
+    @_ensure_elements
+    def intersection(self, other):
+        result = numpy.intersect1d(self.elements, other.elements)
+        return Set(x for x in result)
+
+    @_ensure_elements
+    def difference(self, other):
+        result = numpy.setdiff1d(self.elements, other.elements)
+        return Set(x for x in result)
+
+    @_ensure_elements
+    def symmetric_difference(self, other):
+        result = numpy.setxor1d(self.elements, other.elements)
+        return Set(x for x in result)
+
+    @_ensure_elements
+    def __mul__(self, other):
+        return Product(self, other)
+
+    def __pow__(self, value):
+        if self.elements is None:
+            iter(self)
+        arrays = [self.elements]*value
+        product = list(zip(*arrays))
+        return Domain(product)
+
+    __xor__ = symmetric_difference
+    __sub__ = difference
+    __lt__ = issubset
+    __or__ = union
+    __and__ = intersection
+
+
+class Product(BaseSet):
+    def __init__(self, *sets):
+        self.elements = []
+        for s in sets:
+            if isinstance(s, Product):
+                self.elements.extend(s.elements)
+            else:
+                self.elements.append(s)
+
+    def __iter__(self):
+        return iter(zip(*self.elements))
+
+
+class Set(BaseSet):
     def __init__(self, expression):
         self.expression = expression
-        self.cache = []
         self.function = generator_to_function(expression)
         self.property = get_property(expression)
         self.member = get_member(expression)
         self.domain = expression.gi_frame.f_locals['.0']
-
-    def __iter__(self):
-        if not self.cache:
-            return self
-        else:
-            return iter(self.cache)
+        self.elements = None
 
     def __call__(self, element):
         return self.function(element)
 
-    def __next__(self):
-        result = next(self.expression)
-        self.cache.append(result)
-        return result
+    def __iter__(self):
+        if self.elements is None:
+            self.elements = numpy.array(list(self.expression))
+        return iter(self.elements)
 
 
-class Integers(Identity):
-    def __init__(self, left, right):
-        super().__init__()
-        self.elements = iter(range(left, right+1))
-        self.min = left
-        self.max = right
-
-    def __next__(self):
-        if self.element is None:
-            return next(self.elements)
+class Domain(BaseSet):
+    def __init__(self, iterable):
+        if isinstance(iterable, numpy.ndarray):
+            self.elements = iterable
+        elif isinstance(iterable, Domain):
+            self.elements = iterable.elements
         else:
-            element = self.element
-            self.element = None
-            return element
+            self.elements = numpy.array(iterable)
+
+    def __iter__(self):
+        return iter(self.elements)
