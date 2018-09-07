@@ -2,7 +2,7 @@ import unittest
 import numpy
 import dis
 
-from numset import (Set, generator_to_function, get_property, get_member,
+from numset import (Set, generator_to_function, get_constraints, get_member,
                     Domain)
 
 
@@ -60,7 +60,7 @@ class GetPropertySuite(unittest.TestCase):
     def test_no_property(self):
         def expected(x):
             return True
-        obtained = get_property(x for x in ())
+        obtained = get_constraints(x for x in ())
         zip_exp_obt = zip(dis.Bytecode(expected), dis.Bytecode(obtained))
         for i, (exp, obt) in enumerate(zip_exp_obt):
             with self.subTest(i=i):
@@ -70,7 +70,7 @@ class GetPropertySuite(unittest.TestCase):
     def test_property(self):
         def expected(x, y):
             return x == 1
-        obtained = get_property(x for x, y in () if x == 1)
+        obtained = get_constraints(x for x, y in () if x == 1)
         zip_exp_obt = zip(dis.Bytecode(expected), dis.Bytecode(obtained))
         for i, (exp, obt) in enumerate(zip_exp_obt):
             with self.subTest(i=i):
@@ -78,7 +78,7 @@ class GetPropertySuite(unittest.TestCase):
                 self.assertEqual(exp.argval, obt.argval)
 
     def test_name(self):
-        obtained = get_property(x for x in ())
+        obtained = get_constraints(x for x in ())
         self.assertEqual(obtained.__name__, "<property>")
 
 

@@ -1,3 +1,16 @@
+"""Do numeric operations with the syntax of the generator expression."""
+
+
+# NOTE 1: A generator expression have the following parts:
+#
+#            varnames                                   constraints
+#             ┌─┴──┐                                ┌───────┴───────┐
+# ((x, y) for (x, y) in zip(iterable1, iterable2) if x > 0 and y == 0)
+#  └──┬─┘               └──────────┬────────────┘
+#   member                       domain
+
+
+
 import types
 import opcode
 import functools
@@ -23,42 +36,62 @@ def _get_old_end_label(old_bytecode):
             return i  # Penultimate label found is that will be replaced
 
 
-# Start before the loop initialization
+# Find the start of the new bytecode. The
+# beginign is before the loop initialization.
 def _get_new_start(old_bytecode):
-    flag = 0
+    sentinel = 0
     for i, b in enumerate(old_bytecode):
-        if flag == 0:
+
+        # Come here if the FOR_ITER bytecode is stil not found
+        if sentinel == 0:
+
+            # I know that I enter to the loop set
+            # up when I found the FOR_ITER bytecode
             if isinstance(b, bytecode.Instr) and b.name == "FOR_ITER":
-                flag = 1
-        elif flag == 1:
+                sentinel = 1  # report that FOR_ITER was already found
+
+        # Come here if the FOR_ITER bytecode was found
+        elif sentinel == 1:
             if b.name == "UNPACK_SEQUENCE":
                 continue
-            name = b.name
-            flag = 2
-        elif isinstance(b, bytecode.Instr) and b.name != name:
+            previous_name = b.name
+            sentinel = 2
+
+        # I know that the loop set up was finished when
+        # the current bytecode is different of the previous
+        elif isinstance(b, bytecode.Instr) and b.name != previous_name:
             return i
 
 
+# Get the member part of the generator expression. See NOTE 1
 def _get_member_bytecode(generator):
     old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
     new_bytecode = bytecode.Bytecode()
 
+    # Member bytecode start after POP_JUMP_IF_FALSE bytecode
     for new_start, b in enumerate(old_bytecode):
         if isinstance(b, bytecode.Instr) and b.name == "POP_JUMP_IF_FALSE":
             break
 
     for i in old_bytecode[new_start + 1:]:   # remove the loop initialization
+
+        # Replace YIELD_VALUE  by RETURN_VALUE bytecode because
+        # the new code will be a function, not a generator
         if isinstance(i, bytecode.Instr) and i.name == "YIELD_VALUE":
             new_bytecode.append(bytecode.Instr("RETURN_VALUE"))
-            break
+            break  # the new code ends when return the value
         new_bytecode.append(i)
 
+    # NOTE 2: generator.gi_code.co_varnames everytime contains
+    # the ".0" constant. The res of names are the variable names used by the
+    # generator. That varnames will be the arguments of the new function.
     new_bytecode.varnames = generator.gi_code.co_varnames[:1]
     new_bytecode.argcount = len(new_bytecode.varnames)
 
     return new_bytecode
 
 
+# Create a function object with the given bytecode
 def _bytecode_to_function(generator, byte_code, name):
     new_code = byte_code.to_code()
     new_globals = generator.gi_frame.f_globals
@@ -66,11 +99,13 @@ def _bytecode_to_function(generator, byte_code, name):
 
 
 def get_member(generator):
+    "Extract the member bytecode (see NOTE 1) and create a function with it."
     fun_bytecode = _get_member_bytecode(generator)
     return _bytecode_to_function(generator, fun_bytecode, "<member>")
 
 
-def _get_property_bytecode(generator):
+# Get the constraint bytecode of the generator expression
+def _get_constraints_bytecode(generator):
     old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
     new_bytecode = bytecode.Bytecode()
     new_start = _get_new_start(old_bytecode)
@@ -81,30 +116,35 @@ def _get_property_bytecode(generator):
             break
         new_bytecode.append(i)
 
-    new_bytecode.varnames = generator.gi_code.co_varnames[:1]
+    new_bytecode.varnames = generator.gi_code.co_varnames[:1]  # See NOTE 2
     new_bytecode.argcount = len(new_bytecode.varnames)
     return new_bytecode
 
 
-def _has_property(generator):
+# Check if the generator expression has the constraint part
+def _has_constraints(generator):
     for i, op_code in enumerate(generator.gi_code.co_code):
         if i%2 == 0 and op_code == opcode.opmap["POP_JUMP_IF_FALSE"]:
             return True
     return False
 
 
-def get_property(generator):
-    if _has_property(generator):
-        fun_bytecode = _get_property_bytecode(generator)
+# Get the constraint part of the generator expression and
+# make a function with it. Create a function that everytime
+# return True if the generator have not constraints.
+def get_constraints(generator):
+    if _has_constraints(generator):
+        fun_bytecode = _get_constraints_bytecode(generator)
     else:
         fun_bytecode = bytecode.Bytecode([
             bytecode.Instr("LOAD_CONST", True),
             bytecode.Instr("RETURN_VALUE")])
-        fun_bytecode.argcount = generator.gi_code.co_argcount
-        fun_bytecode.varnames = generator.gi_code.co_varnames[1:]
+    fun_bytecode.varnames = generator.gi_code.co_varnames[1:]  # See NOTE 2
+    fun_bytecode.argcount = generator.gi_code.co_argcount
     return _bytecode_to_function(generator, fun_bytecode, "<property>")
 
 
+# Create a function bytecode with the generator expression bytecode.
 def _generator_to_function_bytecode(generator):
     old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
     new_bytecode = bytecode.Bytecode()
@@ -132,18 +172,19 @@ def _generator_to_function_bytecode(generator):
 
     # return math.nan if element not satisfy the property
     new_bytecode[-2] = bytecode.Instr("LOAD_CONST", numpy.nan)
-
-    new_bytecode.varnames = generator.gi_code.co_varnames[1:]
+    new_bytecode.varnames = generator.gi_code.co_varnames[1:]  # See NOTE 2
     new_bytecode.argcount = len(new_bytecode.varnames)
 
     return new_bytecode
 
 
 def generator_to_function(generator):
+    """Create a function object with the generator expression object."""
     fun_bytecode = _generator_to_function_bytecode(generator)
     return _bytecode_to_function(generator, fun_bytecode, "<function>")
 
 
+# A decorator that ensure that ".elements" property is not none and if full.
 def _ensure_elements(method):
     @functools.wraps(method)
     def wrapper(self, other):
@@ -235,7 +276,7 @@ class Set(BaseSet):
     def __init__(self, expression):
         self.expression = expression
         self.function = generator_to_function(expression)
-        self.property = get_property(expression)
+        self.property = get_constraints(expression)
         self.member = get_member(expression)
         self.domain = expression.gi_frame.f_locals['.0']
         self.elements = None
