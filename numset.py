@@ -3,25 +3,25 @@
 
 # NOTE 1: A generator expression have the following parts:
 #
-#            varnames                                   constraints
-#             ┌─┴──┐                                ┌───────┴───────┐
+#            varnames                                  constraints
+#             ┌─┴──┐                                 ┌──────┴───────┐
 # ((x, y) for (x, y) in zip(iterable1, iterable2) if x > 0 and y == 0)
 #  └──┬─┘               └──────────┬────────────┘
 #   member                       domain
 
 
-
-import types
-import opcode
-import functools
 from collections import abc
+import functools
+import itertools
+import opcode
+import types
 
 import bytecode
 import numpy
 
 
 # In the generator, jump to loop start label if the element satisfy the
-# property. The loop start label in the generator will be the function end
+# constraint. The loop start label in the generator will be the function end
 # label.
 def _get_new_end_label(old_bytecode):
     for i in old_bytecode:
@@ -83,7 +83,7 @@ def _get_member_bytecode(generator):
         new_bytecode.append(i)
 
     # NOTE 2: generator.gi_code.co_varnames everytime contains
-    # the ".0" constant. The res of names are the variable names used by the
+    # the ".0" constant. The another names are the variable names used by the
     # generator. That varnames will be the arguments of the new function.
     new_bytecode.varnames = generator.gi_code.co_varnames[:1]
     new_bytecode.argcount = len(new_bytecode.varnames)
@@ -109,12 +109,26 @@ def _get_constraints_bytecode(generator):
     old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
     new_bytecode = bytecode.Bytecode()
     new_start = _get_new_start(old_bytecode)
+    end_label = bytecode.Label()
 
-    for i in old_bytecode[new_start:]:   # remove the loop initialization
-        if isinstance(i, bytecode.Instr) and i.name == "POP_JUMP_IF_FALSE":
-            new_bytecode.append(bytecode.Instr("RETURN_VALUE"))
-            break
-        new_bytecode.append(i)
+    # Count the amount of POP_JUMP_IF_FALSE bytecodes
+    pjif_count = 0
+    for b in old_bytecode:
+        if isinstance(b, bytecode.Instr) and b.name == "POP_JUMP_IF_FALSE":
+            pjif_count += 1
+
+    for b in old_bytecode[new_start:]:   # remove the loop initialization
+        if isinstance(b, bytecode.Instr) and b.name == "POP_JUMP_IF_FALSE":
+            pjif_count -= 1
+            if pjif_count:
+                new_bytecode.append(bytecode.Instr("JUMP_IF_FALSE_OR_POP",
+                                                   end_label, lineno=b.lineno))
+                continue
+            else:
+                new_bytecode.append(end_label)
+                new_bytecode.append(bytecode.Instr("RETURN_VALUE"))
+                break
+        new_bytecode.append(b)
 
     new_bytecode.varnames = generator.gi_code.co_varnames[:1]  # See NOTE 2
     new_bytecode.argcount = len(new_bytecode.varnames)
@@ -141,7 +155,7 @@ def get_constraints(generator):
             bytecode.Instr("RETURN_VALUE")])
     fun_bytecode.varnames = generator.gi_code.co_varnames[1:]  # See NOTE 2
     fun_bytecode.argcount = generator.gi_code.co_argcount
-    return _bytecode_to_function(generator, fun_bytecode, "<property>")
+    return _bytecode_to_function(generator, fun_bytecode, "<constraint>")
 
 
 # Create a function bytecode with the generator expression bytecode.
@@ -154,7 +168,7 @@ def _generator_to_function_bytecode(generator):
 
     for i in old_bytecode[new_start:]:   # remove the loop initialization
         if isinstance(i, bytecode.Instr):
-            # Return the element that satisfy the property
+            # Return the element that satisfy the constraint
             if i.name == "YIELD_VALUE":
                 new_bytecode.append(bytecode.Instr("RETURN_VALUE", i.arg))
 
@@ -164,13 +178,13 @@ def _generator_to_function_bytecode(generator):
             else:
                 new_bytecode.append(bytecode.Instr(i.name, i.arg))
         else:
-            # jump to end if element not satisfy the property
+            # jump to end if element not satisfy the constraint
             if i == old_end_label:
                 new_bytecode.append(new_end_label)
             else:
                 new_bytecode.append(i)
 
-    # return math.nan if element not satisfy the property
+    # return math.nan if element not satisfy the constraint
     new_bytecode[-2] = bytecode.Instr("LOAD_CONST", numpy.nan)
     new_bytecode.varnames = generator.gi_code.co_varnames[1:]  # See NOTE 2
     new_bytecode.argcount = len(new_bytecode.varnames)
@@ -252,6 +266,10 @@ class BaseSet:
         product = list(zip(*arrays))
         return Domain(product)
 
+    @_ensure_elements
+    def __add__(self, other):
+        return Sum(self, other)
+
     __xor__ = symmetric_difference
     __sub__ = difference
     __lt__ = issubset
@@ -272,13 +290,45 @@ class Product(BaseSet):
         return iter(zip(*self.elements))
 
 
+class Sum(BaseSet):
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+    def __iter__(self):
+        return itertools.chain(self.left, self.right)
+
+class _ConstrainedSet:
+    def __init__(self, elements, constraint):
+        self.elements = elements
+        self.constraint = constraint
+
+    def __next__(self):
+        return next(self.elements)
+
+    def __iter__(self):
+        return self
+
+
 class Set(BaseSet):
     def __init__(self, expression):
         self.expression = expression
-        self.function = generator_to_function(expression)
-        self.property = get_constraints(expression)
         self.member = get_member(expression)
+        self.varnames = expression.gi_code.co_varnames[1:]
         self.domain = expression.gi_frame.f_locals['.0']
+        self.constraint = get_constraints(expression)
+        _function = generator_to_function(expression)
+        if isinstance(self.domain, _ConstrainedSet):
+            _constraint = self.domain.constraint
+            def constrained_function(*args):
+                if _constraint(*args):
+                    print("constraint")
+                    return _function(*args)
+                else:
+                    raise ValueError("Variable do not satisfy the constraint.")
+            self.function = constrained_function
+        else:
+            self.function = _function
         self.elements = None
 
     def __call__(self, element):
@@ -287,7 +337,7 @@ class Set(BaseSet):
     def __iter__(self):
         if self.elements is None:
             self.elements = numpy.array(list(self.expression))
-        return iter(self.elements)
+        return _ConstrainedSet(iter(self.elements), self.constraint)
 
 
 class Domain(BaseSet):
@@ -301,3 +351,13 @@ class Domain(BaseSet):
 
     def __iter__(self):
         return iter(self.elements)
+
+
+Universal = U  = "𝕌"
+Naturals0 = N0 = "ℕ0"
+Naturals1 = N1 = "ℕ1"
+Integers  = Z  = "ℤ"
+Rationals = Q  = "ℚ"
+Reals     = R  = "ℝ"
+Complexes = C  = "ℂ"
+Empty     = E  = "Ø"

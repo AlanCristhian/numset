@@ -56,8 +56,8 @@ class GeneratorToFunctionSuite(unittest.TestCase):
         self.assertEqual(obtained.__name__, "<function>")
 
 
-class GetPropertySuite(unittest.TestCase):
-    def test_no_property(self):
+class GetConstraintSuite(unittest.TestCase):
+    def test_no_constraint(self):
         def expected(x):
             return True
         obtained = get_constraints(x for x in ())
@@ -67,7 +67,7 @@ class GetPropertySuite(unittest.TestCase):
                 self.assertEqual(exp.opname, obt.opname)
                 self.assertEqual(exp.argval, obt.argval)
 
-    def test_property(self):
+    def test_constraint(self):
         def expected(x, y):
             return x == 1
         obtained = get_constraints(x for x, y in () if x == 1)
@@ -77,9 +77,19 @@ class GetPropertySuite(unittest.TestCase):
                 self.assertEqual(exp.opname, obt.opname)
                 self.assertEqual(exp.argval, obt.argval)
 
+    def test_many_constraints(self):
+        def expected(x):
+            return 0 < x and x < 1
+        obtained = get_constraints(x for x in () if 0 < x and x < 1)
+        zip_exp_obt = zip(dis.Bytecode(expected), dis.Bytecode(obtained))
+        for i, (exp, obt) in enumerate(zip_exp_obt):
+            with self.subTest(i=i):
+                self.assertEqual(exp.opname, obt.opname)
+                self.assertEqual(exp.argval, obt.argval)
+
     def test_name(self):
         obtained = get_constraints(x for x in ())
-        self.assertEqual(obtained.__name__, "<property>")
+        self.assertEqual(obtained.__name__, "<constraint>")
 
 
 class GetMememberSuite(unittest.TestCase):
@@ -93,7 +103,7 @@ class GetMememberSuite(unittest.TestCase):
                 self.assertEqual(exp.opname, obt.opname)
                 self.assertEqual(exp.argval, obt.argval)
 
-    def test_complex_member(self):
+    def test_elaborated_expression_member(self):
         def expected(x, y):
             return max(x, y)
         obtained = get_member(max(x, y) for x, y in ())
@@ -122,25 +132,50 @@ class SetSuite(unittest.TestCase):
         f = Set(x for x in range(-2, 0) if x + 1 == 0)
         self.assertEqual(list(f), [-1])
 
-    def test_cache_elements(self):
+    def test_cache_3_elements(self):
         f = Set(x for x in range(-3, 0) if x + 2 == 0)
         for i in range(10):
             self.assertEqual(list(f), [-2])
         self.assertEqual(f.elements, [-2])
         self.assertEqual(f(-2), -2)
 
+    def test_cache_0_elements(self):
+        f = Set(x for x in () if x + 2 == 0)
+        for i in range(10):
+            self.assertEqual(list(f), [])
+        self.assertTrue(numpy.array_equal(f.elements, numpy.array([])))
+        self.assertEqual(f(-2), -2)
+
     def test_callable(self):
-        add_five = Set(x + 5 for x in range(5))
+        add_five = Set(x + 5 for x in range(6))
         self.assertEqual(add_five(5), 10)
 
-    def test_property(self):
+    def test_wrong_argument(self):
+        A = Set(x for x in () if x < 5)
+        add_ten = Set(x + 10 for x in A)
+        message = "Variable do not satisfy the constraint."
+        with self.assertRaisesRegex(ValueError, message):
+            add_ten(6)
+
+    def test_wrong_arguments(self):
+        A = Set(x for x, y in () if x < 5 if y < 5)
+        add_ten = Set(x + 10 for x, y in A)
+        message = "Variable do not satisfy the constraint."
+        with self.assertRaisesRegex(ValueError, message):
+            add_ten(4, 7)
+
+    def test_constraint(self):
         add_six = Set(x + 6 for x in range(-3, 0) if x + 3 == 0)
-        self.assertTrue(add_six.property(-3))
-        self.assertFalse(add_six.property(3))
+        self.assertTrue(add_six.constraint(-3))
+        self.assertFalse(add_six.constraint(3))
 
     def test_member(self):
-        add_seven = Set(x + 6 for x in range(-3, 0) if x + 3 == 0)
-        self.assertEqual(add_seven.member(6), 12)
+        add_seven = Set(x + 7 for x in range(-3, 0) if x + 3 == 0)
+        self.assertEqual(add_seven.member(7), 14)
+
+    def test_varnames(self):
+        add_eight = Set(... for x, y, z in ())
+        self.assertEqual(add_eight.varnames, ("x", "y", "z"))
 
 
 class SetOperationsSuite(unittest.TestCase):
@@ -274,6 +309,13 @@ class DomainSuite(unittest.TestCase):
                 in [(9, 12, 15), (10, 13, 16), (11, 14, 17)])
         self.assertEqual(D, F)
         self.assertEqual(E, F)
+
+    def test_sum(self):
+        A = Domain([0, 1, 2])
+        B = Domain([3, 4, 5])
+        C = Set(x for x in A + B)
+        D = Set(x for x in [0, 1, 2, 3, 4, 5])
+        self.assertEqual(C, D)
 
 
 if __name__ == "__main__":
