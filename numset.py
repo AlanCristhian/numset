@@ -73,9 +73,10 @@ def _get_member_bytecode(generator):
     for ns, b in enumerate(old_bytecode):
         if isinstance(b, bytecode.Instr) and b.name == "POP_JUMP_IF_FALSE":
             start_list.append(ns)
-    if not start_list:
-        start_list.append(ns)
-    new_start = start_list.pop()
+    if start_list:
+        new_start = start_list.pop()
+    else:
+        new_start = ns
 
     for i in old_bytecode[new_start + 1:]:   # remove the loop initialization
 
