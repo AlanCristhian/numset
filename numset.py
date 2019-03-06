@@ -68,10 +68,14 @@ def _get_member_bytecode(generator):
     old_bytecode = bytecode.Bytecode.from_code(generator.gi_code)
     new_bytecode = bytecode.Bytecode()
 
-    # Member bytecode start after POP_JUMP_IF_FALSE bytecode
-    for new_start, b in enumerate(old_bytecode):
+    # Member bytecode start after the last POP_JUMP_IF_FALSE bytecode
+    start_list = []
+    for ns, b in enumerate(old_bytecode):
         if isinstance(b, bytecode.Instr) and b.name == "POP_JUMP_IF_FALSE":
-            break
+            start_list.append(ns)
+    if not start_list:
+        start_list.append(ns)
+    new_start = start_list.pop()
 
     for i in old_bytecode[new_start + 1:]:   # remove the loop initialization
 
@@ -154,7 +158,7 @@ def get_constraints(generator):
             bytecode.Instr("LOAD_CONST", True),
             bytecode.Instr("RETURN_VALUE")])
     fun_bytecode.varnames = generator.gi_code.co_varnames[1:]  # See NOTE 2
-    fun_bytecode.argcount = generator.gi_code.co_argcount
+    fun_bytecode.argcount = len(fun_bytecode.varnames)
     return _bytecode_to_function(generator, fun_bytecode, "<constraint>")
 
 
@@ -322,7 +326,6 @@ class Set(BaseSet):
             _constraint = self.domain.constraint
             def constrained_function(*args):
                 if _constraint(*args):
-                    print("constraint")
                     return _function(*args)
                 else:
                     raise ValueError("Variable do not satisfy the constraint.")
@@ -331,8 +334,8 @@ class Set(BaseSet):
             self.function = _function
         self.elements = None
 
-    def __call__(self, element):
-        return self.function(element)
+    def __call__(self, *element):
+        return self.function(*element)
 
     def __iter__(self):
         if self.elements is None:

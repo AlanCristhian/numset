@@ -158,7 +158,7 @@ class SetSuite(unittest.TestCase):
             add_ten(6)
 
     def test_wrong_arguments(self):
-        A = Set(x for x, y in () if x < 5 if y < 5)
+        A = Set((x, y) for x, y in () if x < 5 if y < 5)
         add_ten = Set(x + 10 for x, y in A)
         message = "Variable do not satisfy the constraint."
         with self.assertRaisesRegex(ValueError, message):
